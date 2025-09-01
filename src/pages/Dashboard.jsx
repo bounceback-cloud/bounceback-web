@@ -9,7 +9,7 @@ export default function Dashboard() {
 
   const [moodStreak, setMoodStreak] = useState(0);
   const [recoStreak, setRecoStreak] = useState(0);
-  const [comebackCount, setComebackCount] = useState(0);
+  const [comebackCount, setComebackCount] = useState(0); // ✅ new: streaks saved
   const [hobbies, setHobbies] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [report, setReport] = useState(null);
@@ -27,34 +27,46 @@ export default function Dashboard() {
     due_at: "",
   });
 
-  // delete confirm state
   const [deleteHobbyId, setDeleteHobbyId] = useState(null);
   const [deleteTaskId, setDeleteTaskId] = useState(null);
 
-  // Bounce Back state
   const [challenge, setChallenge] = useState(null);
 
-  // Streak calculator
-  const calcStreak = (records) => {
-    if (!records?.length) return 0;
-    const dates = [...new Set(
-      records.map((r) => new Date(r.created_at).toISOString().split("T")[0])
-    )];
-    let streak = 0;
-    let today = new Date();
-    for (let i = 0; i < dates.length; i++) {
-      let expected = new Date(today);
-      expected.setDate(expected.getDate() - i);
-      if (dates.includes(expected.toISOString().split("T")[0])) streak++;
-      else break;
-    }
-    return streak;
-  };
+  // streak calculator
+  function calcStreak(records) {
+  const dates = [...new Set(
+    records
+      .map((r) => {
+        // prefer completed_at if available, else created_at
+        const d = r.completed_at || r.created_at;
+        if (!d) return null;
 
-  // Fetch dashboard data
+        const parsed = new Date(d);
+        if (isNaN(parsed)) return null;
+
+        return parsed.toISOString().split("T")[0];
+      })
+      .filter(Boolean) // remove null/invalid entries
+  )];
+
+  let streak = 0;
+  let today = new Date().toISOString().split("T")[0];
+
+  while (dates.includes(today)) {
+    streak++;
+    const prev = new Date(today);
+    prev.setDate(prev.getDate() - 1);
+    today = prev.toISOString().split("T")[0];
+  }
+
+  return streak;
+}
+
+  // fetch all dashboard data
   async function fetchData() {
     if (!userId) return;
     setLoading(true);
+
     try {
       const { data: moods } = await supabase
         .from("mood_checkins")
@@ -70,6 +82,14 @@ export default function Dashboard() {
 
       setMoodStreak(calcStreak(moods));
       setRecoStreak(calcStreak(recos));
+
+      // ✅ streaks saved count
+      const { data: challenges } = await supabase
+        .from("comeback_challenges")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("completed", true);
+      setComebackCount(challenges?.length || 0);
 
       const { data: hobbiesData } = await supabase
         .from("hobbies")
@@ -92,19 +112,9 @@ export default function Dashboard() {
         .from("v_weekly_report")
         .select("*")
         .eq("user_id", userId);
-      if (error) {
-        console.error("Weekly report fetch error:", error);
-      } else {
-        setReport(data?.[0] || null);
-      }
 
-      // Count completed comeback challenges for "Streaks Saved"
-      const { data: challenges } = await supabase
-        .from("comeback_challenges")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("completed", true);
-      setComebackCount(challenges?.length || 0);
+      if (error) console.error("Weekly report fetch error:", error);
+      else setReport(data?.[0] || null);
     } catch (err) {
       console.error("⚠️ Dashboard fetch error:", err);
     } finally {
@@ -116,7 +126,7 @@ export default function Dashboard() {
     if (userId) fetchData();
   }, [userId]);
 
-  // Add hobby
+  // add hobby
   async function addHobby(e) {
     e.preventDefault();
     if (!newHobby.name) return;
@@ -129,7 +139,7 @@ export default function Dashboard() {
     fetchData();
   }
 
-  // Add task
+  // add task
   async function addTask(e) {
     e.preventDefault();
     if (!newTask.title) return;
@@ -143,75 +153,62 @@ export default function Dashboard() {
     fetchData();
   }
 
-  // Log hobby session
+  // log hobby session
   async function logHobbySession(hobbyId, minutes, note) {
-    const { error } = await supabase.from("hobby_logs").insert([
-      {
-        user_id: userId,
-        hobby_id: hobbyId,
-        started_at: new Date().toISOString(),
-        duration_minutes: minutes || null,
-        note: note || null,
-        source: "manual",
-      },
-    ]);
+    const { error } = await supabase.from("hobby_logs").insert([{
+      user_id: userId,
+      hobby_id: hobbyId,
+      started_at: new Date().toISOString(),
+      duration_minutes: minutes || null,
+      note: note || null,
+      source: "manual",
+    }]);
 
     if (error) {
-      console.error("Insert failed:", error.message, error.details, error.hint);
+      console.error("Insert failed:", error.message);
     } else {
       await supabase.rpc("refresh_weekly_report_rpc");
       fetchData();
     }
   }
 
-  // Complete task + Bounce Back logic
+  // complete task + bounce back
   async function completeTask(id) {
     const { error } = await supabase
       .from("tasks")
-      .update({
-        status: "done",
-        completed_at: new Date().toISOString(),
-      })
+      .update({ status: "done", completed_at: new Date().toISOString() })
       .eq("id", id)
       .eq("user_id", userId);
 
     if (error) {
       console.error("Error completing task:", error.message);
     } else {
-      // Recalculate streak
       const { data: tasksDone } = await supabase
         .from("tasks")
         .select("completed_at")
         .eq("user_id", userId)
         .eq("status", "done");
+
       const taskStreak = calcStreak(tasksDone);
 
-      // Offer a comeback challenge if the task streak seems broken
       if (taskStreak === 0) {
         const challenges = [
           "Do 5 deep breaths and refocus.",
           "Write down one thing you’re grateful for.",
           "Stand up and stretch for 2 minutes.",
           "Quick win: Tidy your desk for 3 minutes.",
-          "Think of one small goal for tomorrow.",
+          "Think of one small goal for tomorrow."
         ];
         const randomChallenge =
           challenges[Math.floor(Math.random() * challenges.length)];
 
-        const { data: cData, error: cErr } = await supabase
+        const { data: cData } = await supabase
           .from("comeback_challenges")
-          .insert([
-            {
-              user_id: userId,
-              type: "task",
-              challenge_text: randomChallenge,
-            },
-          ])
+          .insert([{ user_id: userId, type: "task", challenge_text: randomChallenge }])
           .select()
           .single();
 
-        if (cErr) console.error("⚠️ Failed to insert challenge:", cErr);
-        else setChallenge(cData);
+        if (cData) setChallenge(cData);
       }
 
       await supabase.rpc("refresh_weekly_report_rpc");
@@ -219,57 +216,36 @@ export default function Dashboard() {
     }
   }
 
-  // Mark comeback challenge complete
   async function handleChallengeComplete() {
     if (!challenge) return;
-
-    const { error } = await supabase
+    await supabase
       .from("comeback_challenges")
       .update({ completed: true })
       .eq("id", challenge.id)
       .eq("user_id", userId);
-
-    if (error) {
-      console.error("⚠️ Failed to complete comeback challenge:", error);
-    } else {
-      // refresh streaks after comeback
-      fetchData();
-    }
+    fetchData();
     setChallenge(null);
   }
 
-  // Delete (soft)
+  // delete
   async function deleteHobby(id) {
-    await supabase
-      .from("hobbies")
-      .update({ is_deleted: true })
-      .eq("id", id)
-      .eq("user_id", userId);
+    await supabase.from("hobbies").update({ is_deleted: true }).eq("id", id).eq("user_id", userId);
     setDeleteHobbyId(null);
     fetchData();
   }
 
   async function deleteTask(id) {
-    await supabase
-      .from("tasks")
-      .update({ is_deleted: true })
-      .eq("id", id)
-      .eq("user_id", userId);
+    await supabase.from("tasks").update({ is_deleted: true }).eq("id", id).eq("user_id", userId);
     setDeleteTaskId(null);
     fetchData();
   }
 
-  // Priority colors
   const getPriorityClass = (priority) => {
     switch (priority) {
-      case "high":
-        return "text-red-600 font-semibold";
-      case "medium":
-        return "text-yellow-600 font-semibold";
-      case "low":
-        return "text-green-600 font-semibold";
-      default:
-        return "text-gray-600";
+      case "high": return "text-red-600 font-semibold";
+      case "medium": return "text-yellow-600 font-semibold";
+      case "low": return "text-green-600 font-semibold";
+      default: return "text-gray-600";
     }
   };
 
@@ -280,11 +256,10 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center">
       <h1 className="text-2xl font-bold text-purple-700 mb-6">👋 Welcome Back!</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-5xl items-stretch">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-5xl items-start">
         {/* Streaks */}
-        <div className="bg-white shadow-md rounded-xl p-6 flex flex-col min-h-[220px]">
+        <div className="bg-white shadow-md rounded-xl p-6 flex flex-col h-full">
           <h2 className="text-lg font-semibold mb-3">🔥 Streaks</h2>
-
           <p className="text-gray-700">
             Mood Check-in Streak:{" "}
             <span className="font-bold text-purple-600">{moodStreak} days</span>
@@ -293,48 +268,33 @@ export default function Dashboard() {
             Recommendations Done:{" "}
             <span className="font-bold text-green-600">{recoStreak} days</span>
           </p>
-
-          {/* Highlighted streaks saved */}
-          <div className="mt-3">
-            <p className="text-gray-700 flex items-center gap-2">
-              ⚡ Streaks Saved:{" "}
-              <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold">
-                {comebackCount}
-              </span>
-            </p>
-
-            {/* Progress bar visualizing comebacks (cycles every 10) */}
-            <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-              <div
-                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${Math.min((comebackCount % 10) * 10, 100)}%` }}
-              />
-            </div>
-            <p className="text-xs text-gray-500 mt-1">
-              {10 - (comebackCount % 10)} more saves until next milestone 🎯
-            </p>
-          </div>
+          <p className="text-gray-700">
+            ⚡ Streaks Saved:{" "}
+            <span className="font-bold text-blue-600">{comebackCount}</span>
+          </p>
         </div>
 
         {/* Hobbies */}
-        <div className="bg-white shadow-md rounded-xl p-6 flex flex-col min-h-[220px]">
+        <div className="bg-white shadow-md rounded-xl p-6 flex flex-col h-full">
           <h2 className="text-lg font-semibold mb-3">🎨 My Hobbies</h2>
-
-          {/* Scroll only the list so the card height stays tidy */}
-          <div className="flex-1 overflow-y-auto max-h-40 md:max-h-48 pr-1">
+          <div className="flex-1 overflow-y-auto max-h-60 pr-1">
             {hobbies.length > 0 ? (
               hobbies.map((h) => (
                 <div key={h.id} className="mb-4 border-b pb-3">
                   <p className="font-medium text-gray-800">{h.name}</p>
                   <p className="text-sm text-gray-500">
-                    🎯 Target: {h.target_sessions_per_week} sessions/week • {h.target_minutes_per_session} min/session
+                    🎯 Target: {h.target_sessions_per_week} sessions/week •{" "}
+                    {h.target_minutes_per_session} min/session
                   </p>
                   <p className="text-sm text-gray-600">
                     📊 Progress: (future: show sessions & minutes logged this week)
                   </p>
+
                   <div className="flex gap-2 mt-2">
                     <button
-                      onClick={() => logHobbySession(h.id, h.target_minutes_per_session, "")}
+                      onClick={() =>
+                        logHobbySession(h.id, h.target_minutes_per_session, "")
+                      }
                       className="px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
                     >
                       Log Session
@@ -359,7 +319,9 @@ export default function Dashboard() {
               type="text"
               placeholder="New hobby name"
               value={newHobby.name}
-              onChange={(e) => setNewHobby({ ...newHobby, name: e.target.value })}
+              onChange={(e) =>
+                setNewHobby({ ...newHobby, name: e.target.value })
+              }
               className="w-full border rounded p-2"
               required
             />
@@ -367,7 +329,12 @@ export default function Dashboard() {
               <input
                 type="number"
                 value={newHobby.target_sessions_per_week}
-                onChange={(e) => setNewHobby({ ...newHobby, target_sessions_per_week: Number(e.target.value) })}
+                onChange={(e) =>
+                  setNewHobby({
+                    ...newHobby,
+                    target_sessions_per_week: Number(e.target.value),
+                  })
+                }
                 className="w-1/2 border rounded p-2"
                 placeholder="Sessions/week"
                 min="1"
@@ -375,13 +342,21 @@ export default function Dashboard() {
               <input
                 type="number"
                 value={newHobby.target_minutes_per_session}
-                onChange={(e) => setNewHobby({ ...newHobby, target_minutes_per_session: Number(e.target.value) })}
+                onChange={(e) =>
+                  setNewHobby({
+                    ...newHobby,
+                    target_minutes_per_session: Number(e.target.value),
+                  })
+                }
                 className="w-1/2 border rounded p-2"
                 placeholder="Minutes/session"
                 min="1"
               />
             </div>
-            <button type="submit" className="w-full bg-purple-600 text-white py-2 rounded hover:bg-purple-700">
+            <button
+              type="submit"
+              className="w-full bg-purple-600 text-white py-2 rounded hover:bg-purple-700"
+            >
               ➕ Add Hobby
             </button>
           </form>
@@ -473,7 +448,10 @@ export default function Dashboard() {
                 className="w-1/3 border rounded p-2"
               />
             </div>
-            <button type="submit" className="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700">
+            <button
+              type="submit"
+              className="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700"
+            >
               ➕ Add Task
             </button>
           </form>
@@ -486,9 +464,7 @@ export default function Dashboard() {
             <ul className="space-y-1 text-gray-700">
               <li>Mood logs: {report.mood_logs_7d}</li>
               <li>Recommendations completed: {report.recommendations_done_7d}</li>
-              <li>
-                Tasks done: {report.tasks_done_7d} / {report.tasks_created_7d}
-              </li>
+              <li>Tasks done: {report.tasks_done_7d} / {report.tasks_created_7d}</li>
               <li>
                 Hobby sessions: {report.hobby_sessions_7d} ({report.hobby_minutes_7d} minutes)
               </li>
@@ -499,7 +475,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Delete confirms */}
+      {/* Delete modals */}
       {deleteHobbyId && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/50">
           <div className="bg-white p-6 rounded-xl w-80">
