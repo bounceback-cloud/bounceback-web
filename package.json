@@ -4,11 +4,11 @@
   "version": "0.0.2",
   "type": "module",
   "scripts": {
-    "clean": "rm -rf node_modules dist .vite",
-    "dev": "vite",
-    "build": "npx vite build",
-    "preview": "vite preview"
-  },
+  "clean": "rm -rf node_modules dist .vite",
+  "dev": "vite",
+  "build": "node --no-warnings ./node_modules/vite/bin/vite.js build",
+  "preview": "vite preview"
+},
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.3",
